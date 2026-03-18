@@ -3,127 +3,127 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>T-Rex 3 接続連動録画</title>
+    <title>T-Rex 3 Android確定版</title>
     <style>
         body { font-family: sans-serif; padding: 15px; background: #f0f2f5; margin: 0; }
-        .container { max-width: 100%; background: white; padding: 15px; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-top: 10px; }
-        #preview { width: 100%; border-radius: 8px; background: #000; display: block; margin-bottom: 10px; }
-        .status-box { padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #ddd; background: #fff; }
+        .container { max-width: 100%; background: white; padding: 15px; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        #preview { width: 100%; border-radius: 8px; background: #000; display: block; }
+        .status-box { padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #ddd; margin: 10px 0; }
+        #rssi-display { font-size: 2rem; font-weight: bold; }
         .recording { border-color: #dc3545 !important; background: #fff1f0; color: #dc3545; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0.7; } }
         button { width: 100%; padding: 15px; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; color: white; background: #007bff; }
-        #log-list { list-style: none; padding: 0; margin-top: 15px; font-size: 0.8rem; border-top: 1px solid #eee; }
-        .log-item { padding: 5px; border-bottom: 1px solid #eee; }
+        #log-list { list-style: none; padding: 0; font-size: 0.8rem; border-top: 1px solid #eee; max-height: 150px; overflow-y: auto; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>T-Rex 3 接続連動録画</h1>
+    <h1>T-Rex 3 自動録画 (Android版)</h1>
     <video id="preview" autoplay muted playsinline></video>
 
     <div id="status-panel" class="status-box">
-        <div id="dist-status">デバイスを選択してください</div>
+        <div id="rssi-display">-- dBm</div>
+        <div id="dist-status">デバイスを接続してください</div>
     </div>
     
-    <div style="margin-top: 15px;">
-        <button id="setup-btn">システム開始 (BT・カメラ)</button>
-    </div>
-
+    <button id="setup-btn">システム開始</button>
     <ul id="log-list"></ul>
 </div>
 
 <script>
     const preview = document.getElementById('preview');
+    const rssiDisplay = document.getElementById('rssi-display');
     const distStatusEl = document.getElementById('dist-status');
     const statusPanel = document.getElementById('status-panel');
     const logList = document.getElementById('log-list');
 
-    let stream, mediaRecorder, recordedChunks = [];
-    let bluetoothDevice;
+    let device, server, stream, mediaRecorder, recordedChunks = [];
+    let RSSI_THRESHOLD = -75;
+    let isRecording = false;
+    let rssiInterval;
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    function playBeep(freq, dur) {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.frequency.value = freq; gain.gain.value = 0.05;
-        osc.connect(gain).connect(audioCtx.destination);
-        osc.start(); osc.stop(audioCtx.currentTime + dur);
+    function playBeep(f, d) {
+        const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+        o.frequency.value = f; g.gain.value = 0.05;
+        o.connect(g).connect(audioCtx.destination);
+        o.start(); o.stop(audioCtx.currentTime + d);
     }
 
-    function startRecording() {
+    // 録画制御
+    function startRec() {
+        if (isRecording) return;
         recordedChunks = [];
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-        mediaRecorder.onstop = () => {
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `T-Rex3_${Date.now()}.webm`;
-            a.click();
-        };
+        mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
+        mediaRecorder.onstop = saveVid;
         mediaRecorder.start();
+        isRecording = true;
+        statusPanel.className = "status-box recording";
+        distStatusEl.textContent = "● 圏内：録画中";
+        playBeep(880, 0.2);
     }
 
-    // 再接続・監視ループ
-    async function watchConnection() {
-        while (true) {
-            try {
-                if (!bluetoothDevice.gatt.connected) {
-                    distStatusEl.textContent = "圏外：接近を待機中...";
-                    statusPanel.className = "status-box";
+    function stopRec() {
+        if (!isRecording) return;
+        mediaRecorder.stop();
+        isRecording = false;
+        statusPanel.className = "status-box";
+        distStatusEl.textContent = "圏外：待機中";
+        playBeep(440, 0.4);
+    }
+
+    function saveVid() {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `T-Rex3_${Date.now()}.webm`;
+        a.click();
+    }
+
+    // RSSI監視（接続中のみ有効）
+    async function monitorRSSI() {
+        rssiInterval = setInterval(async () => {
+            if (device && device.gatt.connected) {
+                try {
+                    // Android Chromeで接続中にRSSIを取得する唯一の方法
+                    // (※一部端末では接続中のRSSI取得に制限がある場合があります)
+                    const rssi = await device.gatt.readRSSI(); 
+                    rssiDisplay.textContent = rssi + " dBm";
                     
-                    // 接近して接続が成功したとき
-                    await bluetoothDevice.gatt.connect();
-                    
-                    playBeep(880, 0.2);
-                    startRecording();
-                    statusPanel.className = "status-box recording";
-                    distStatusEl.textContent = "● 圏内：録画中";
-                    addLog("接続成功 (録画開始)");
-                }
-            } catch (err) {
-                // 圏外にいる間は失敗し続ける
+                    if (rssi >= RSSI_THRESHOLD) {
+                        startRec();
+                    } else {
+                        stopRec();
+                    }
+                } catch (e) { console.log("RSSI取得失敗"); }
             }
-            await new Promise(r => setTimeout(r, 3000)); // 3秒おきにチェック
-        }
-    }
-
-    function addLog(msg) {
-        const li = document.createElement('li');
-        li.className = 'log-item';
-        li.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        logList.prepend(li);
+        }, 1000);
     }
 
     document.getElementById('setup-btn').addEventListener('click', async () => {
         if (audioCtx.state === 'suspended') audioCtx.resume();
-
         try {
-            // カメラ起動（背面カメラ）
             stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
             preview.srcObject = stream;
 
-            // デバイス選択
-            bluetoothDevice = await navigator.bluetooth.requestDevice({
+            device = await navigator.bluetooth.requestDevice({
                 filters: [{ namePrefix: 'Amazfit T-Rex 3' }],
                 optionalServices: ['generic_access']
             });
 
-            // 切断イベント検知（離れたとき）
-            bluetoothDevice.addEventListener('gattserverdisconnected', () => {
-                if (mediaRecorder && mediaRecorder.state === "recording") {
-                    mediaRecorder.stop();
-                    playBeep(440, 0.4);
-                    addLog("切断検知 (録画終了)");
-                }
+            distStatusEl.textContent = "接続しています...";
+            server = await device.gatt.connect();
+            
+            device.addEventListener('gattserverdisconnected', () => {
+                stopRec();
+                alert("切断されました");
             });
 
-            watchConnection(); // 監視開始
-
-        } catch (error) {
-            alert("エラー: " + error.message);
-        }
+            monitorRSSI();
+            distStatusEl.textContent = "監視中...";
+        } catch (err) { alert("エラー: " + err.message); }
     });
 </script>
 </body>
