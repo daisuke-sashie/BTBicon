@@ -2,60 +2,162 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>BLE Beacon Distance Alert</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>T-Rex 3 Android自動録画</title>
+    <style>
+        body { font-family: sans-serif; padding: 15px; background: #f0f2f5; margin: 0; }
+        .container { max-width: 100%; background: white; padding: 15px; border-radius: 0 0 15px 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { font-size: 1.2rem; text-align: center; color: #007bff; margin: 10px 0; }
+        #preview { width: 100%; border-radius: 8px; background: #000; display: block; margin-bottom: 10px; }
+        .status-box { padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #ddd; background: #fff; transition: 0.3s; }
+        #rssi-val { font-size: 2.2rem; font-weight: bold; }
+        .recording { border-color: #dc3545 !important; background: #fff1f0; color: #dc3545; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.7; } }
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+        button { padding: 15px; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; color: white; }
+        #setup-btn { background: #007bff; }
+        #download-btn { background: #6c757d; }
+        #log-list { list-style: none; padding: 0; margin-top: 15px; font-size: 0.8rem; border-top: 1px solid #eee; }
+        .log-item { padding: 5px; border-bottom: 1px solid #eee; font-family: monospace; }
+    </style>
 </head>
 <body>
-    <h1>BLE 1m接近検知テスト</h1>
-    <button id="startScan">スキャン開始（要クリック）</button>
-    <div id="status">ステータス: 停止中</div>
-    <div id="distance">現在のRSSI: --</div>
 
-    <script>
-        const startBtn = document.getElementById('startScan');
-        const statusDiv = document.getElementById('status');
-        const distDiv = document.getElementById('distance');
-        
-        // 通知音（ビープ音）の設定
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        function playBeep() {
-            const osc = audioCtx.createOscillator();
-            osc.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.2); // 0.2秒鳴らす
+<div class="container">
+    <h1>T-Rex 3 録画ロガー (Android)</h1>
+    <video id="preview" autoplay muted playsinline></video>
+
+    <div id="status-panel" class="status-box">
+        <div id="rssi-val">-- dBm</div>
+        <div id="dist-status">BTとカメラを準備してください</div>
+        <div style="font-size: 0.8rem; margin-top: 5px;">しきい値: <span id="threshold-display">-75</span> dBm</div>
+    </div>
+    
+    <div class="btn-group">
+        <button id="setup-btn">スキャン開始</button>
+        <button id="download-btn" disabled>CSV保存</button>
+    </div>
+
+    <ul id="log-list"></ul>
+</div>
+
+<script>
+    const preview = document.getElementById('preview');
+    const rssiValEl = document.getElementById('rssi-val');
+    const distStatusEl = document.getElementById('dist-status');
+    const statusPanel = document.getElementById('status-panel');
+    const logList = document.getElementById('log-list');
+    const downloadBtn = document.getElementById('download-btn');
+
+    let RSSI_THRESHOLD = -75;
+    let isCurrentlyInZone = false;
+    let logs = [];
+    let mediaRecorder;
+    let recordedChunks = [];
+    let stream;
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playBeep(freq, dur) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.value = 0.05;
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + dur);
+    }
+
+    function startRecording() {
+        recordedChunks = [];
+        // Android Chromeで安定するwebm形式を指定
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `T-Rex3_${Date.now()}.webm`;
+            a.click();
+        };
+        mediaRecorder.start();
+    }
+
+    document.getElementById('setup-btn').addEventListener('click', async () => {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        try {
+            // Androidのアウトカメラ（背面）を優先的に使用
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment" }, 
+                audio: true 
+            });
+            preview.srcObject = stream;
+        } catch (err) {
+            alert("カメラエラー: " + err.message);
+            return;
         }
 
-        startBtn.addEventListener('click', async () => {
-            try {
-                statusDiv.innerText = "ステータス: スキャン中...";
-                
-                // 1. BLEデバイスのスキャンを開始
-                // 全てのデバイスを対象にするか、特定の名前などでフィルタリング
-                const scan = await navigator.bluetooth.requestLEScan({
-                    acceptAllAdvertisements: true
-                });
+        const input = prompt("圏内判定のしきい値(RSSI):", RSSI_THRESHOLD);
+        if (input !== null) {
+            RSSI_THRESHOLD = parseInt(input);
+            document.getElementById('threshold-display').textContent = RSSI_THRESHOLD;
+        }
 
-                // 2. 広告を受信した時のイベント
-                navigator.bluetooth.addEventListener('advertisementreceived', event => {
-                    const rssi = event.rssi;
-                    distDiv.innerText = `現在のRSSI: ${rssi} dBm (デバイス: ${event.name || '不明'})`;
+        try {
+            const device = await navigator.bluetooth.requestDevice({
+                filters: [{ namePrefix: 'Amazfit T-Rex 3' }],
+                optionalServices: ['generic_access']
+            });
 
-                    // 3. 1メートル以内（約-65dBm以上）の判定
-                    // ※環境に合わせてこの数値を調整してください
-                    if (rssi > -65) {
-                        statusDiv.innerText = "ステータス: 1m以内に接近！";
-                        statusDiv.style.color = "red";
-                        playBeep();
-                    } else {
-                        statusDiv.style.color = "black";
-                        statusDiv.innerText = "ステータス: スキャン中...";
+            await device.watchAdvertisements();
+            distStatusEl.textContent = "パケット受信中...";
+
+            device.addEventListener('advertisementreceived', (event) => {
+                const rssi = event.rssi;
+                rssiValEl.textContent = rssi + " dBm";
+
+                if (rssi >= RSSI_THRESHOLD) {
+                    if (!isCurrentlyInZone) {
+                        isCurrentlyInZone = true;
+                        playBeep(880, 0.2);
+                        startRecording();
+                        statusPanel.className = "status-box recording";
+                        distStatusEl.textContent = "● REC 録画中";
+                        addLog("圏内(録画開始)", rssi);
                     }
-                });
+                } else {
+                    if (isCurrentlyInZone) {
+                        isCurrentlyInZone = false;
+                        playBeep(440, 0.4);
+                        if (mediaRecorder.state === "recording") mediaRecorder.stop();
+                        statusPanel.className = "status-box";
+                        distStatusEl.textContent = "圏外待機中";
+                        addLog("圏外(録画終了)", rssi);
+                    }
+                }
+            });
+        } catch (error) {
+            alert("BTエラー: " + error.message);
+        }
+    });
 
-            } catch (error) {
-                console.error(error);
-                statusDiv.innerText = "エラー: " + error;
-            }
-        });
-    </script>
+    function addLog(status, rssi) {
+        const time = new Date().toLocaleTimeString('ja-JP');
+        logs.push({ time: time, status: status, rssi: rssi });
+        downloadBtn.disabled = false;
+        const li = document.createElement('li');
+        li.className = 'log-item';
+        li.innerHTML = `[${time}] ${status} RSSI:${rssi}`;
+        logList.prepend(li);
+    }
+
+    downloadBtn.addEventListener('click', () => {
+        let csv = "\uFEFF時間,状態,RSSI\n" + logs.map(e => `${e.time},${e.status},${e.rssi}`).join("\n");
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+        link.download = "T-Rex3_Log.csv";
+        link.click();
+    });
+</script>
 </body>
 </html>
