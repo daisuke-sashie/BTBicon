@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>BLE Beacon Distance Alert</title>
+</head>
+<body>
+    <h1>BLE 1m接近検知テスト</h1>
+    <button id="startScan">スキャン開始（要クリック）</button>
+    <div id="status">ステータス: 停止中</div>
+    <div id="distance">現在のRSSI: --</div>
+
+    <script>
+        const startBtn = document.getElementById('startScan');
+        const statusDiv = document.getElementById('status');
+        const distDiv = document.getElementById('distance');
+        
+        // 通知音（ビープ音）の設定
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playBeep() {
+            const osc = audioCtx.createOscillator();
+            osc.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.2); // 0.2秒鳴らす
+        }
+
+        startBtn.addEventListener('click', async () => {
+            try {
+                statusDiv.innerText = "ステータス: スキャン中...";
+                
+                // 1. BLEデバイスのスキャンを開始
+                // 全てのデバイスを対象にするか、特定の名前などでフィルタリング
+                const scan = await navigator.bluetooth.requestLEScan({
+                    acceptAllAdvertisements: true
+                });
+
+                // 2. 広告を受信した時のイベント
+                navigator.bluetooth.addEventListener('advertisementreceived', event => {
+                    const rssi = event.rssi;
+                    distDiv.innerText = `現在のRSSI: ${rssi} dBm (デバイス: ${event.name || '不明'})`;
+
+                    // 3. 1メートル以内（約-65dBm以上）の判定
+                    // ※環境に合わせてこの数値を調整してください
+                    if (rssi > -65) {
+                        statusDiv.innerText = "ステータス: 1m以内に接近！";
+                        statusDiv.style.color = "red";
+                        playBeep();
+                    } else {
+                        statusDiv.style.color = "black";
+                        statusDiv.innerText = "ステータス: スキャン中...";
+                    }
+                });
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.innerText = "エラー: " + error;
+            }
+        });
+    </script>
+</body>
+</html>
