@@ -3,28 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>汎用BT自動録画 (Android安定版)</title>
+    <title>BT連動 手動録画システム</title>
     <style>
         body { font-family: sans-serif; padding: 15px; background: #f0f2f5; margin: 0; }
         .container { max-width: 100%; background: white; padding: 15px; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        #preview { width: 100%; border-radius: 8px; background: #000; display: block; }
-        .status-box { padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #ddd; margin: 10px 0; }
-        .recording { border-color: #dc3545 !important; background: #fff1f0; color: #dc3545; animation: blink 1s infinite; }
-        @keyframes blink { 50% { opacity: 0.7; } }
-        button { width: 100%; padding: 15px; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; color: white; background: #007bff; margin-bottom: 10px; }
-        #log-list { list-style: none; padding: 0; font-size: 0.8rem; border-top: 1px solid #eee; max-height: 150px; overflow-y: auto; }
+        #preview { width: 100%; border-radius: 8px; background: #000; display: block; margin-bottom: 10px; }
+        .status-box { padding: 10px; border-radius: 8px; text-align: center; border: 2px solid #ddd; margin-bottom: 15px; font-size: 0.9rem; }
+        .recording-ui { border-color: #dc3545 !important; background: #fff1f0; color: #dc3545; font-weight: bold; }
+        
+        .controls { display: flex; flex-direction: column; gap: 10px; }
+        button { width: 100%; padding: 15px; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; color: white; transition: 0.2s; }
+        
+        #connect-btn { background: #007bff; }
+        #rec-btn { background: #28a745; }
+        #rec-btn.stop { background: #dc3545; }
+        #rec-btn:disabled { background: #ccc; cursor: not-allowed; }
+        
+        #log-list { list-style: none; padding: 0; margin-top: 15px; font-size: 0.8rem; border-top: 1px solid #eee; max-height: 120px; overflow-y: auto; }
         .log-item { padding: 5px; border-bottom: 1px solid #eee; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>汎用BT自動録画</h1>
+    <h1>BT連動 手動録画システム</h1>
     <video id="preview" autoplay muted playsinline></video>
+    
     <div id="status-panel" class="status-box">
-        <div id="dist-status">デバイスを選択してください</div>
+        <div id="dist-status">1. デバイスを接続してください</div>
     </div>
-    <button id="setup-btn">デバイス選択 & 開始</button>
+
+    <div class="controls">
+        <button id="connect-btn">デバイス接続</button>
+        <button id="rec-btn" disabled>撮影開始</button>
+    </div>
+
     <ul id="log-list"></ul>
 </div>
 
@@ -32,6 +45,8 @@
     const preview = document.getElementById('preview');
     const distStatusEl = document.getElementById('dist-status');
     const statusPanel = document.getElementById('status-panel');
+    const recBtn = document.getElementById('rec-btn');
+    const connectBtn = document.getElementById('connect-btn');
     const logList = document.getElementById('log-list');
 
     let device, stream, mediaRecorder, recordedChunks = [];
@@ -46,6 +61,7 @@
         o.start(); o.stop(audioCtx.currentTime + d);
     }
 
+    // 録画開始
     function startRec() {
         if (isRecording) return;
         recordedChunks = [];
@@ -53,80 +69,99 @@
         mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
         mediaRecorder.onstop = () => {
             const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `BT_Record_${Date.now()}.webm`;
+            a.href = url;
+            a.download = `REC_${new Date().getTime()}.webm`;
             a.click();
         };
         mediaRecorder.start();
+        
         isRecording = true;
-        statusPanel.className = "status-box recording";
-        distStatusEl.textContent = "● 圏内(接続)：録画中";
+        recBtn.textContent = "撮影終了";
+        recBtn.classList.add("stop");
+        statusPanel.classList.add("recording-ui");
+        distStatusEl.textContent = "● 録画中...";
         playBeep(880, 0.2);
+        addLog("録画を開始しました");
     }
 
+    // 録画停止
     function stopRec() {
         if (!isRecording) return;
         mediaRecorder.stop();
+        
         isRecording = false;
-        statusPanel.className = "status-box";
-        distStatusEl.textContent = "圏外(切断)：待機中";
+        recBtn.textContent = "撮影開始";
+        recBtn.classList.remove("stop");
+        statusPanel.classList.remove("recording-ui");
+        distStatusEl.textContent = device && device.gatt.connected ? "接続済み：待機中" : "圏外：再接続待機中";
         playBeep(440, 0.4);
+        addLog("録画を終了し保存しました");
     }
 
-    document.getElementById('setup-btn').addEventListener('click', async () => {
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
-            preview.srcObject = stream;
-
-            device = await navigator.bluetooth.requestDevice({
-                acceptAllDevices: true,
-                optionalServices: ['heart_rate', 'battery_service', 'device_information', 'generic_access']
-            });
-
-            // 切断イベントを監視（離れたとき）
-            device.addEventListener('gattserverdisconnected', () => {
-                stopRec();
-                addLog("デバイスが離脱しました");
-                reconnectLoop(); // 再接続待機へ
-            });
-
-            await connectAndStart();
-        } catch (err) { alert("エラー: " + err.message); }
-    });
-
-    async function connectAndStart() {
-        try {
-            distStatusEl.textContent = "接続を試みています...";
-            await device.gatt.connect();
-            startRec();
-            addLog("デバイスを検知しました");
-        } catch (e) {
-            reconnectLoop();
-        }
-    }
-
-    // 再接続を繰り返して「近づいた瞬間」を待機
-    async function reconnectLoop() {
-        distStatusEl.textContent = "接近を待機しています...";
-        while (!device.gatt.connected) {
-            try {
-                await device.gatt.connect();
-                startRec();
-                addLog("再接近を検知しました");
-                break;
-            } catch (e) {
-                await new Promise(r => setTimeout(r, 2000));
-            }
-        }
-    }
-
+    // ログ表示
     function addLog(msg) {
         const li = document.createElement('li');
         li.className = 'log-item';
         li.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
         logList.prepend(li);
+    }
+
+    // デバイス接続処理
+    connectBtn.addEventListener('click', async () => {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        try {
+            // カメラ準備
+            if (!stream) {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
+                preview.srcObject = stream;
+            }
+
+            // BT選択
+            device = await navigator.bluetooth.requestDevice({
+                acceptAllDevices: true,
+                optionalServices: ['heart_rate', 'battery_service', 'generic_access']
+            });
+
+            device.addEventListener('gattserverdisconnected', () => {
+                addLog("デバイス切断");
+                if (isRecording) stopRec(); // 離れたら自動停止
+                reconnectLoop();
+            });
+
+            await device.gatt.connect();
+            distStatusEl.textContent = "接続済み：撮影可能です";
+            recBtn.disabled = false;
+            addLog("デバイス接続完了");
+
+        } catch (err) { alert("エラー: " + err.message); }
+    });
+
+    // 録画ボタンのクリックイベント
+    recBtn.addEventListener('click', () => {
+        if (!isRecording) {
+            startRec();
+        } else {
+            stopRec();
+        }
+    });
+
+    // 再接続ループ
+    async function reconnectLoop() {
+        recBtn.disabled = true;
+        distStatusEl.textContent = "圏外：再接続を待っています...";
+        while (device && !device.gatt.connected) {
+            try {
+                await device.gatt.connect();
+                addLog("再接続成功");
+                distStatusEl.textContent = "再接続済み：撮影可能です";
+                recBtn.disabled = false;
+                break;
+            } catch (e) {
+                await new Promise(r => setTimeout(r, 3000));
+            }
+        }
     }
 </script>
 </body>
